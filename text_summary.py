@@ -1,55 +1,62 @@
+from flask import Flask, request, jsonify
 from transformers import pipeline, AutoTokenizer
+from werkzeug.utils import secure_filename
+import os
 
-# Load model and tokenizer once globally
-model_name = "facebook/bart-large-cnn"
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-summarizer = pipeline("summarization", model=model_name, tokenizer=tokenizer)
+app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024  # Max file size: 10MB
+
+# Load summarizer and tokenizer once
+MODEL_NAME = "facebook/bart-large-cnn"
+summarizer = pipeline("summarization", model=MODEL_NAME, tokenizer=MODEL_NAME)
+tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 
 def chunk_text(text, tokenizer, max_length=512, overlap=50):
-    """Splits text into tokenized chunks of max_length tokens with an overlap."""
     tokens = tokenizer(text, truncation=False, padding=False)["input_ids"]
     chunks = []
-
     for i in range(0, len(tokens), max_length - overlap):
         chunk = tokens[i:i + max_length]
         chunks.append(chunk)
-
     return [tokenizer.decode(chunk, skip_special_tokens=True) for chunk in chunks]
 
-def summarize_text_from_file(transcript_file):
-    """Summarize text read from a file."""
-    with open(transcript_file, "r", encoding="utf-8") as f:
-        transcript = f.read()
-    return summarize_chunks(transcript)
-
-def summarize_text_from_string(text_string):
-    """Summarize text passed directly as a string."""
-    return summarize_chunks(text_string)
-
 def summarize_chunks(text):
-    """Shared logic to chunk and summarize text."""
-    chunks = chunk_text(text, tokenizer, max_length=512, overlap=50)
-    summaries = []
+    chunks = chunk_text(text, tokenizer)
+    summaries = [summarizer(chunk, max_length=150, min_length=50, do_sample=False)[0]['summary_text'] for chunk in chunks]
+    return " ".join(summaries)
 
-    for chunk in chunks:
-        summary = summarizer(chunk, max_length=150, min_length=50, do_sample=False)
-        summaries.append(summary[0]['summary_text'])
+# ✅ Route 1: POST /summarize - Accepts raw text
+@app.route("/summarize", methods=["POST"])
+def summarize_text():
+    data = request.get_json()
+    if not data or "text" not in data:
+        return jsonify({"error": "Missing 'text' in request"}), 400
+    try:
+        summary = summarize_chunks(data["text"])
+        return jsonify({"summary": summary})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
-    final_summary = " ".join(summaries)
-    return final_summary
+# ✅ Route 2: POST /upload - Accepts file upload
+@app.route("/upload", methods=["POST"])
+def upload_file():
+    if "file" not in request.files:
+        return jsonify({"error": "No file part"}), 400
 
-# Example: Summarize from file
-file_summary = summarize_text_from_file("Second.txt")
-print("**File-based Meeting Summary**\n", file_summary)
+    file = request.files["file"]
+    if file.filename == "":
+        return jsonify({"error": "No selected file"}), 400
 
-with open("Second_summary.txt", "w", encoding="utf-8") as f:
-    f.write("**Meeting Summary**\n\n")
-    f.write(file_summary)
+    try:
+        text = file.read().decode("utf-8")
+        summary = summarize_chunks(text)
+        return jsonify({"summary": summary})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
-# Example: Summarize from text string
-input_text = """
-Artificial intelligence has been rapidly evolving, enabling machines to perform tasks once thought only humans could do.
-Natural language processing, computer vision, and decision-making capabilities are increasingly integrated into real-world applications.
-"""
-string_summary = summarize_text_from_string(input_text)
-print("\n**String-based Summary**\n", string_summary)
+# 🏁 Optional: Health check
+@app.route("/")
+def home():
+    return "Summarization API is running."
+
+if __name__ == "__main__":
+    app.run(debug=True)
