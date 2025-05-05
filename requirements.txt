@@ -1,3 +1,4 @@
-flask
-transformers
-torch
+Flask==2.3.2
+transformers==4.40.0
+torch  # Needed for Transformers
+gunicorn==20.1.0  # Add this line for Gunicorn support
